@@ -1,0 +1,19 @@
+{
+  "classifier": {
+    "openaiModel": "gpt-4o-mini",
+    "anthropicModel": "claude-haiku-4-5",
+    "existingProjectThreshold": 0.7,
+    "newProjectThreshold": 0.88,
+    "maxContextChars": 12000,
+    "keywordCeiling": 0.68
+  },
+  "discovery": {
+    "defaultMaxChats": 20,
+    "knownChatStopCount": 8,
+    "delayBetweenChatsMs": 1200
+  },
+  "browser": {
+    "channel": "chrome",
+    "slowMo": 50
+  }
+}

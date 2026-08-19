@@ -1,0 +1,31 @@
+{
+  "name": "claudeen-organizero",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "login": "tsx src/cli.ts login",
+    "organize": "tsx src/cli.ts organize",
+    "scan": "tsx src/cli.ts scan",
+    "archive": "tsx src/cli.ts archive",
+    "verify": "tsx src/cli.ts verify",
+    "test": "node --test --import tsx test/*.test.ts",
+    "projects": "tsx src/cli.ts projects",
+    "status": "tsx src/cli.ts status",
+    "inspect": "tsx src/cli.ts inspect",
+    "report": "tsx src/cli.ts report"
+  },
+  "dependencies": {
+    "playwright": "^1.54.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to config/project-rules.json. A rule fires when ANY of its terms appears in the conversation, and manual rules outrank every other signal with full confidence. Keep terms distinctive — proper nouns, product names, jargon. A term like 'process' or 'best' will mis-file unrelated conversations and nothing downstream can override it. Do not paste your existing chat titles here: that encodes history, not a rule.",
+  "aliases": {
+    "Kakunyn Technology": "Kakunyn",
+    "IJEP": "Jung"
+  },
+  "rules": [
+    {
+      "contains": ["Elden Ring", "Godrick", "Malenia"],
+      "project": "Elden Ring"
+    },
+    {
+      "_comment": "Use review instead of project to flag a topic for manual sorting.",
+      "contains": ["invoice", "tax return"],
+      "review": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+.env
+.state/
+playwright/.auth/
+node_modules/
+dist/
+*.log
+
+# Private, user-specific configuration (may contain conversation titles)
+config/config.json
+config/project-rules.json
+config/project-rules.backup.json
