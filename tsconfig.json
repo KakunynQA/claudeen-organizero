@@ -6,6 +6,9 @@
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
+    // TypeScript 7 no longer pulls in every @types/* package automatically, so
+    // node's globals and `node:*` modules have to be requested by name.
+    "types": ["node"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
