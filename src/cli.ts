@@ -66,6 +66,15 @@ function parseArgs(argv: string[]): CliOptions {
   if (maxChats !== undefined && (!Number.isInteger(maxChats) || maxChats < 1)) {
     throw new Error("--max-chats must be a positive integer");
   }
+  // Rejected at the edge, before a browser is opened. Rebuilding profiles from
+  // a capped pass would recompute each examined project's keywords from only
+  // the slice that happened to fit under the cap.
+  if (command === "verify" && values.has("rebuild-profiles") && maxChats !== undefined) {
+    throw new Error(
+      "--rebuild-profiles recomputes a project's keywords from every conversation verified in the pass, "
+      + "so it has to see the whole state. Drop --max-chats.",
+    );
+  }
   return {
     command,
     provider,

@@ -10,6 +10,7 @@ import type {
   MessageExcerpt,
   MoveOutcome,
   Project,
+  ProjectReading,
 } from "../../types/index.js";
 import { CLAUDE_SELECTORS, CLAUDE_URLS } from "./selectors.js";
 import { RateLimitedError } from "../../errors.js";
@@ -378,11 +379,19 @@ export class ClaudeProvider implements ConversationProvider {
     return discovered;
   }
 
+  /**
+   * Identity keys for one conversation, in precedence order — the same rule
+   * StateStore.chatKey uses.
+   *
+   * The title is only a fallback for a row with no id and no url. Matching on
+   * *any* of the three meant a new conversation sharing a title with an
+   * organized one ("Untitled", a re-asked question) was treated as already
+   * known: it never reached the classifier, and each false match pushed the
+   * scroll closer to its consecutive-known cutoff.
+   */
   private chatKey(chat: ChatSummary): string[] {
-    const keys = [chat.id, chat.url, chat.title]
-      .filter((value): value is string => Boolean(value))
-      .map((value) => normalize(value));
-    return keys;
+    const stable = chat.id || chat.url || chat.title;
+    return stable ? [normalize(stable)] : [];
   }
 
   /**
@@ -681,20 +690,41 @@ export class ClaudeProvider implements ConversationProvider {
     return { id: chat.id, title, url: chat.url ?? (await this.getPage()).url(), excerpts: limited };
   }
 
-  async getCurrentProject(chat: ChatSummary): Promise<Project | null> {
+  async getCurrentProject(chat: ChatSummary, expected?: string): Promise<ProjectReading> {
     // The caller only supplies the conversation, so the answer has to be read
     // from that conversation. Verifier.run relies on this: it never navigates.
     await this.ensureChatOpen(chat);
     const page = await this.getPage();
     const projectId = this.projectIdFromUrl(page.url());
-    const projects = await this.knownProjects();
+    let projects = await this.knownProjects();
+
     if (projectId) {
-      return projects.find((project) => project.id === projectId || project.url?.includes(`/${projectId}`)) ?? { id: projectId, name: projectId };
+      const byId = this.findProjectById(projects, projectId);
+      if (byId) return { read: "ok", project: byId };
+      // The id proves membership, but a raw uuid is not a name: reporting it as
+      // one made the verifier record `found it in "3f2a-…"` and downgrade a
+      // correct placement. Re-list once in case the cached list was scraped
+      // from a conversation page and only ever held one project.
+      this.cachedProjects = undefined;
+      projects = await this.knownProjects();
+      const resolved = this.findProjectById(projects, projectId);
+      if (resolved) return { read: "ok", project: resolved };
+      if (expected && normalize(expected) === normalize(projectId)) {
+        return { read: "ok", project: { id: projectId, name: expected } };
+      }
+      return { read: "unreadable", reason: `the conversation is in project ${projectId}, whose name could not be resolved` };
+    }
+
+    if (projects.length === 0) {
+      return { read: "unreadable", reason: "the project list could not be read, so a project name cannot be recognised" };
     }
 
     // Claude occasionally shows a project breadcrumb in the app shell while
-    // keeping /chat/<id> in the URL.
-    const mainProjectLinks = page.locator('main a[href*="/project/"]');
+    // keeping /chat/<id> in the URL. Scoped to the header on purpose: a plain
+    // `main a[href*="/project/"]` also matches a claude.ai/project/<id> link
+    // pasted into the transcript, which would be read as this conversation's
+    // own project.
+    const mainProjectLinks = page.locator('main header a[href*="/project/"], main nav a[href*="/project/"]');
     const count = Math.min(await mainProjectLinks.count(), 5);
     for (let index = 0; index < count; index += 1) {
       const link = mainProjectLinks.nth(index);
@@ -706,9 +736,13 @@ export class ClaudeProvider implements ConversationProvider {
       const known = projects.find(
         (candidate) => candidate.id === project.id || normalize(candidate.name) === normalize(project.name),
       );
-      if (known) return known;
+      if (known) return { read: "ok", project: known };
     }
-    return null;
+    return { read: "none" };
+  }
+
+  private findProjectById(projects: Project[], projectId: string): Project | undefined {
+    return projects.find((project) => project.id === projectId || project.url?.includes(`/${projectId}`));
   }
 
   /**
@@ -1012,9 +1046,9 @@ export class ClaudeProvider implements ConversationProvider {
     const fromList = await this.conversationRowVisible(chat);
     if (!fromList) {
       await this.ensureChatOpen(chat);
-      const current = await this.getCurrentProject(chat);
-      if (current && normalize(current.name) === normalize(project.name)) {
-        return { verified: true, observedProject: current.name };
+      const current = await this.getCurrentProject(chat, project.name);
+      if (current.read === "ok" && normalize(current.project.name) === normalize(project.name)) {
+        return { verified: true, observedProject: current.project.name };
       }
     }
 
@@ -1047,6 +1081,7 @@ export class ClaudeProvider implements ConversationProvider {
   private async confirmChatInProject(chat: ChatSummary, project: Project): Promise<MoveOutcome> {
     const page = await this.getPage();
     let observed: Project | null = null;
+    let unreadable: string | undefined;
     let reopened = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await page.waitForTimeout(600);
@@ -1058,10 +1093,20 @@ export class ClaudeProvider implements ConversationProvider {
       // Re-navigating is a read step, so a failed navigation is retried rather
       // than fatal — but it must never be mistaken for a confirmed move, which
       // is why the loop continues instead of falling through to a stale page.
-      reopened = await this.openChat(chat).then(() => true).catch(() => false);
+      //
+      // A plain openChat is not enough here: the move does not change the
+      // /chat/<id> URL, so its "already on this page" shortcut skipped the
+      // navigation and this loop re-read the *pre-move* DOM three times in a
+      // row. Force a real reload so there is something new to read.
+      reopened = await this.reopenForVerification(chat);
       if (!reopened) continue;
-      observed = await this.getCurrentProject(chat);
-      if (!observed) continue;
+      const reading = await this.getCurrentProject(chat, project.name);
+      if (reading.read === "unreadable") {
+        unreadable = reading.reason;
+        continue;
+      }
+      if (reading.read === "none") continue;
+      observed = reading.project;
       if (normalize(observed.name) === normalize(project.name)) {
         return { verified: true, observedProject: observed.name };
       }
@@ -1079,8 +1124,27 @@ export class ClaudeProvider implements ConversationProvider {
       observedProject: observed?.name,
       detail: observed
         ? `conversation still reads as project "${observed.name}"`
-        : "no project could be read from the conversation after the move",
+        : unreadable
+          ? `the conversation could not be read after the move: ${unreadable}`
+          : "no project could be read from the conversation after the move",
     };
+  }
+
+  /**
+   * Re-opens a conversation with a genuine round-trip to the server, for the one
+   * caller that has to see state the move just changed. Reports whether it
+   * actually happened, so a failed reload is never read as a confirmed move.
+   */
+  private async reopenForVerification(chat: ChatSummary): Promise<boolean> {
+    try {
+      const page = await this.getPage();
+      await this.openChat(chat);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(600);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async captureDiagnostics(action: string, error?: unknown): Promise<string> {

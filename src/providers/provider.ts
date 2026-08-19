@@ -1,4 +1,4 @@
-import type { ArchiveOutcome, ChatContext, ChatSummary, ListChatsOptions, MoveOutcome, Project, ProviderName } from "../types/index.js";
+import type { ArchiveOutcome, ChatContext, ChatSummary, ListChatsOptions, MoveOutcome, Project, ProjectReading, ProviderName } from "../types/index.js";
 
 export interface ConversationProvider {
   readonly provider: ProviderName;
@@ -14,8 +14,15 @@ export interface ConversationProvider {
    * conversation themselves: callers such as the verifier pass a conversation
    * without opening it, and answering from whatever page is loaded turns a whole
    * verification pass into one reading of the app home page.
+   *
+   * Returning a three-way `ProjectReading` rather than `Project | null` is
+   * load-bearing: an implementation that cannot tell must say `unreadable`, so
+   * no caller can mistake a failed read for proof of an empty project. Pass
+   * `expected` when the caller already knows which project it is hoping for —
+   * it lets an implementation confirm membership from a project-scoped URL and
+   * answer in the caller's own spelling.
    */
-  getCurrentProject(chat: ChatSummary): Promise<Project | null>;
+  getCurrentProject(chat: ChatSummary, expected?: string): Promise<ProjectReading>;
   createProject(name: string): Promise<Project>;
   /**
    * Moves a conversation into a project and reports whether the result was

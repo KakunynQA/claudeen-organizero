@@ -11,6 +11,7 @@ import type {
   MessageExcerpt,
   MoveOutcome,
   Project,
+  ProjectReading,
 } from "../../types/index.js";
 import { chatGptSelectors, chatGptUrls, genericChatGptLabels } from "./selectors.js";
 import { RateLimitedError, UnsupportedConversationError } from "../../errors.js";
@@ -275,48 +276,110 @@ export class ChatGPTProvider implements ConversationProvider {
     };
   }
 
-  async getCurrentProject(chat: ChatSummary): Promise<Project | null> {
+  /**
+   * Reads which project the conversation is in, retrying the way the move path
+   * already does.
+   *
+   * `openChat` waits only for the first message turn to be *attached*, but
+   * ChatGPT loads `/c/<id>` and rewrites it to `/g/g-p-.../c/<id>` during
+   * hydration, after that turn exists. A single sample therefore catches the
+   * pre-hydration state often enough to matter: `confirmChatInProject` has
+   * always looped three times with a reload, and this read — the one the
+   * verifier depends on — was the only one that did not. Attempt 1 costs
+   * nothing extra, so the organizer's hot path stays fast.
+   */
+  async getCurrentProject(chat: ChatSummary, expected?: string): Promise<ProjectReading> {
     await this.openChat(chat);
-    return this.readProjectOfOpenConversation();
+    let last: ProjectReading = { read: "unreadable", reason: "the conversation was never read" };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        await this.page.waitForTimeout(600);
+        await this.page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+        await this.page
+          .locator(chatGptSelectors.messageTurns.join(","))
+          .first()
+          .waitFor({ state: "attached", timeout: 15_000 })
+          .catch(() => undefined);
+      }
+      last = await this.readProjectOfOpenConversation(expected);
+      if (last.read === "ok") return last;
+    }
+    return last;
   }
 
-  /** Reads the owning project of whatever conversation is currently open. */
-  private async readProjectOfOpenConversation(): Promise<Project | null> {
+  /**
+   * Reads the owning project of whatever conversation is currently open.
+   *
+   * Answers `unreadable` rather than `none` whenever it cannot actually tell —
+   * an empty project list or a main area that never rendered proves nothing
+   * about the conversation, and reporting it as "in no project" is what caused
+   * good records to be downgraded in bulk.
+   */
+  private async readProjectOfOpenConversation(expected?: string): Promise<ProjectReading> {
     // Project-scoped chat URLs are the most reliable signal when available.
     // Read once up front: listProjects touches the sidebar and can navigate.
     const conversationUrl = this.page.url();
     const scopeId = this.idFromUrl(conversationUrl, chatGptUrls.projectScope);
     const projects = await this.knownProjects();
+
     if (scopeId) {
       const match = projects.find(
         (project) => project.id === scopeId || (project.name && slugOf(scopeId).endsWith(slugOf(project.name))),
       );
-      if (match) return match;
+      if (match) return { read: "ok", project: match };
+      // A project-scoped URL is proof of membership even when the sidebar never
+      // listed that project. Answering in the caller's own spelling is what lets
+      // the strict name comparison downstream succeed; the dash-anchored rule in
+      // urlBelongsToProject is used on purpose, so scope `g-p-1-devops` does not
+      // satisfy an expectation of "Ops".
+      if (expected && this.urlBelongsToProject(conversationUrl, expected)) {
+        return { read: "ok", project: { id: scopeId, name: expected, url: conversationUrl } };
+      }
+    }
+
+    if (projects.length === 0) {
+      return { read: "unreadable", reason: "the project list could not be read, so a project name cannot be recognised" };
     }
 
     // In other UI versions the breadcrumb is a project link. Restrict lookup
     // to links visible in the main/breadcrumb area, not the whole sidebar.
     const main = this.page.locator("main, [role='main']").first();
+    if ((await main.count()) === 0) {
+      return { read: "unreadable", reason: "the conversation area never rendered" };
+    }
     const projectLinks = main.locator(chatGptSelectors.projectLinks.join(","));
     const count = await projectLinks.count();
     for (let index = 0; index < count; index += 1) {
       const candidate = await this.readProjectElement(projectLinks.nth(index));
+      if (!candidate) continue;
+      // Identity first: a candidate carrying the same project id as a listed
+      // project is that project, whatever its label reads.
+      const byId = candidate.id ? projects.find((project) => project.id === candidate.id) : undefined;
+      if (byId) return { read: "ok", project: byId };
       // The conversation header also carries controls whose labels contain the
       // word "project" — "Add to project sources" is not a project name. Only a
       // label the sidebar actually lists as a project counts as evidence.
-      if (!candidate || PROJECT_ACTION_LABEL.test(candidate.name)) continue;
+      if (PROJECT_ACTION_LABEL.test(candidate.name)) continue;
       const known = projects.find((project) => sameName(project.name, candidate.name));
-      if (known) return known;
+      if (known) return { read: "ok", project: known };
     }
-    return null;
+    return { read: "none" };
   }
 
   /**
    * The sidebar project list is stable within a run and walking it is the
    * single most expensive read here, so it is fetched once and reused.
+   *
+   * An empty result is never cached. `[]` is truthy, so caching it made one
+   * unhydrated sidebar read poison the rest of the run: every later
+   * readProjectOfOpenConversation matched nothing, returned null, and the
+   * verifier downgraded each remaining conversation to `unverified` in one
+   * uninterrupted streak. ClaudeProvider has always guarded this; this one did
+   * not, which is what produced 35 identical "found it in no project" records
+   * out of 238 in a single pass.
    */
   private async knownProjects(): Promise<Project[]> {
-    if (!this.cachedProjects) this.cachedProjects = await this.listProjects();
+    if (!this.cachedProjects?.length) this.cachedProjects = await this.listProjects();
     return this.cachedProjects;
   }
 
@@ -376,9 +439,9 @@ export class ChatGPTProvider implements ConversationProvider {
     const fromList = await this.conversationRowVisible(chat);
     if (!fromList) {
       await this.openChat(chat);
-      const current = await this.readProjectOfOpenConversation();
-      if (current && sameName(current.name, project.name)) {
-        return { verified: true, observedProject: current.name };
+      const current = await this.readProjectOfOpenConversation(project.name);
+      if (current.read === "ok" && sameName(current.project.name, project.name)) {
+        return { verified: true, observedProject: current.project.name };
       }
     }
 
@@ -463,6 +526,7 @@ export class ChatGPTProvider implements ConversationProvider {
    */
   private async confirmChatInProject(project: Project): Promise<MoveOutcome> {
     let observed: Project | null = null;
+    let unreadable: string | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await this.page.waitForTimeout(600);
       await this.page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
@@ -476,9 +540,14 @@ export class ChatGPTProvider implements ConversationProvider {
       if (this.urlBelongsToProject(this.page.url(), project.name)) {
         return { verified: true, observedProject: project.name };
       }
-      observed = await this.readProjectOfOpenConversation();
-      if (observed && sameName(observed.name, project.name)) {
-        return { verified: true, observedProject: observed.name };
+      const reading = await this.readProjectOfOpenConversation(project.name);
+      if (reading.read === "ok") {
+        observed = reading.project;
+        if (sameName(observed.name, project.name)) {
+          return { verified: true, observedProject: observed.name };
+        }
+      } else if (reading.read === "unreadable") {
+        unreadable = reading.reason;
       }
     }
     return {
@@ -486,7 +555,9 @@ export class ChatGPTProvider implements ConversationProvider {
       observedProject: observed?.name,
       detail: observed
         ? `conversation still reads as project "${observed.name}"`
-        : "no project could be read from the conversation after the move",
+        : unreadable
+          ? `the conversation could not be read after the move: ${unreadable}`
+          : "no project could be read from the conversation after the move",
     };
   }
 

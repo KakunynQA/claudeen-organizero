@@ -362,3 +362,40 @@ describe("rebuildProfileKeywords", () => {
     assert.deepEqual(index.projects.ProjectB.exampleChatIds, []);
   });
 });
+
+describe("deduplicateProjects preserves observed names", () => {
+  /**
+   * Names read from the site are identities, not free text. Truncating them to
+   * 60 characters cached a project under a name the chooser never renders, and
+   * the exact-label lookup then failed with "project ... was not found in the
+   * project chooser after scrolling it to the end".
+   */
+  it("does not truncate a long project name", () => {
+    const long = "A project whose name is considerably longer than sixty characters in total";
+    assert.ok(long.length > 60, "fixture must exceed the old truncation limit");
+    const [only] = deduplicateProjects([{ name: long }]);
+    assert.equal(only?.name, long);
+  });
+
+  it("recognises a long project as already present instead of appending a copy", () => {
+    const long = "A project whose name is considerably longer than sixty characters in total";
+    // The sidebar scan yields the same project through several selectors, so
+    // one call routinely sees the raw name more than once. While the first copy
+    // was stored truncated, findProject compared the next raw name against that
+    // shortened entry, missed, and appended a duplicate — every single refresh.
+    const projects = deduplicateProjects([{ name: long }, { name: long }, { name: `${long} ` }]);
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.name, long);
+  });
+
+  it("still collapses whitespace in an observed name", () => {
+    const [only] = deduplicateProjects([{ name: "  Spaced   Out  " }]);
+    assert.equal(only?.name, "Spaced Out");
+  });
+
+  it("keeps bounding a name this tool is about to create", () => {
+    // cleanProjectName remains the authoring path's guard; only the observing
+    // path stopped using it.
+    assert.equal(cleanProjectName("x".repeat(80)).length, 60);
+  });
+});

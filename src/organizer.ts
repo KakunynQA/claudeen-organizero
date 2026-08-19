@@ -101,9 +101,21 @@ export class Organizer {
 
     const cached = await this.store.loadProjects();
     let projects = cached.projects;
+    // An empty read is not evidence that the account has no projects: a
+    // collapsed sidebar, a bot check, or a slow render all yield []. Writing
+    // that over the cache made every later findProject miss, so the run created
+    // duplicates of projects that already existed on the site — and left the
+    // state file claiming zero projects for every future run.
+    let projectListRead: "ok" | "empty" = "ok";
     if (options.refreshProjects || projects.length === 0) {
-      projects = deduplicateProjects(await this.provider.listProjects());
-      if (!options.dryRun) await this.store.saveProjects(projects);
+      const fresh = deduplicateProjects(await this.provider.listProjects());
+      if (fresh.length === 0 && projects.length > 0) {
+        projectListRead = "empty";
+        console.warn("\n⚠ The project list came back empty; keeping the cached list for this run.");
+      } else {
+        projects = fresh;
+        if (!options.dryRun) await this.store.saveProjects(projects);
+      }
     }
 
     console.log(`Projects cached: ${cached.projects.length}`);
@@ -132,7 +144,15 @@ export class Organizer {
         knownKeys.add(chat.url.toLocaleLowerCase());
         knownKeys.add(`url:${chat.url}`);
       }
-      knownKeys.add(chat.title.trim().toLocaleLowerCase());
+      // Deliberately no bare title. Titles are not identities: two different
+      // conversations routinely share one ("Untitled", a re-asked question, the
+      // same auto-generated summary). Seeding the raw title made a brand-new
+      // conversation match an organized one, so it was dropped from discovery
+      // and could never be organized — and because each false match counts as
+      // a known chat, `knownChatStopCount` of them aborted the scroll early and
+      // hid the genuinely new conversations further down. `chatKey` above still
+      // falls back to the title for rows that have no id and no url, which is
+      // the only case where a title legitimately has to stand in for identity.
     }
     const chats = await this.provider.listChats({
       maxChats: options.maxChats,
@@ -175,9 +195,12 @@ export class Organizer {
         let project = findProject(projects, result.projectName);
         if (!project) {
           const refreshed = deduplicateProjects(await this.provider.listProjects());
-          projects = deduplicateProjects([...projects, ...refreshed]);
-          project = findProject(projects, result.projectName);
-          if (!options.dryRun) await this.store.saveProjects(projects);
+          if (refreshed.length === 0) projectListRead = "empty";
+          else {
+            projects = deduplicateProjects([...projects, ...refreshed]);
+            project = findProject(projects, result.projectName);
+            if (!options.dryRun) await this.store.saveProjects(projects);
+          }
         }
 
         const threshold = project
@@ -190,8 +213,13 @@ export class Organizer {
           continue;
         }
 
-        const current = await this.provider.getCurrentProject(chat);
-        if (current && normalize(current.name) === normalize(project?.name ?? result.projectName)) {
+        // An unreadable answer means "attempt the move", which is the safe
+        // default here: the move path re-reads and confirms for itself, so a
+        // failed read costs one redundant menu action, never a false record.
+        const expectedName = project?.name ?? result.projectName;
+        const reading = await this.provider.getCurrentProject(chat, expectedName);
+        const current = reading.read === "ok" ? reading.project : null;
+        if (current && normalize(current.name) === normalize(expectedName)) {
           stats.alreadyOrganized++;
           console.log(options.dryRun ? "     DRY RUN: SKIP — already organized; no changes made" : "     ✓ already organized");
           if (!options.dryRun) {
@@ -206,6 +234,18 @@ export class Organizer {
         }
 
         if (!project) {
+          // Creating here on the strength of an unreadable project list is how a
+          // duplicate of an existing project gets made — and a spurious project
+          // is much harder to undo than a conversation left for the next run.
+          if (projectListRead === "empty") {
+            stats.errors++;
+            console.log("     ✗ the project list could not be read; not creating a project on that basis");
+            await this.persist(chat, key, result, "unverified", {
+              excerpt,
+              detail: "the project list could not be read, so the target project could not be confirmed to be absent",
+            });
+            continue;
+          }
           project = await this.provider.createProject(cleanProjectName(result.projectName));
           projects = deduplicateProjects([...projects, project]);
           await this.store.saveProjects(projects);
@@ -251,7 +291,10 @@ export class Organizer {
           const failed: ProcessedChat = {
             key, id: chat.id, url: chat.url, title: chat.title, provider: this.provider.provider,
             processedAt: new Date().toISOString(), classificationConfidence: 0, status: "error",
-            error: `${message}; diagnostics: ${diagnostics}`, excerpt,
+            error: `${message}; diagnostics: ${diagnostics}`,
+            // Same reason as in persist(): a failed retry must not erase the
+            // excerpt an earlier successful read captured.
+            excerpt: excerpt ?? (await this.existingExcerpt(key)),
           };
           await this.store.upsertChat(failed);
           await this.store.recordAction({ type: "error", chatKey: key, title: chat.title, error: message, diagnostics });
@@ -282,13 +325,24 @@ export class Organizer {
     extra: { excerpt?: string; detail?: string } = {},
   ): Promise<void> {
     const { excerpt, detail } = extra;
+    // upsertChat replaces the record wholesale, so an excerpt captured by an
+    // earlier full run would be dropped by a later --titles-only retry, which
+    // never reads one. Keep whatever was already recorded. `error` is not
+    // carried over on purpose: a successful retry has to clear the old failure.
     const item: ProcessedChat = {
       key, id: chat.id, url: chat.url, title: chat.title, provider: this.provider.provider,
       project: result?.projectName, processedAt: new Date().toISOString(),
-      classificationConfidence: result?.confidence ?? 0, status, error: detail, excerpt,
+      classificationConfidence: result?.confidence ?? 0, status, error: detail,
+      excerpt: excerpt ?? (await this.existingExcerpt(key)),
     };
     await this.store.upsertChat(item);
     await this.store.recordAction({ type: status, chatKey: key, title: chat.title, project: result?.projectName, confidence: result?.confidence, detail });
+  }
+
+  /** The excerpt already on file for this conversation, if any. */
+  private async existingExcerpt(key: string): Promise<string | undefined> {
+    const { chats } = await this.store.loadChats();
+    return chats.find((chat) => chat.key === key)?.excerpt;
   }
 
   private async learn(project: Project, chatId: string, title: string): Promise<void> {
@@ -352,7 +406,18 @@ export interface VerifiedChats {
  * A term is kept only when exactly one project uses it, so the profiles stay
  * mutually exclusive by construction.
  */
-export function rebuildProfileKeywords(index: ProjectIndexFile, verifiedByProject: Map<string, VerifiedChats>): void {
+export function rebuildProfileKeywords(
+  index: ProjectIndexFile,
+  verifiedByProject: Map<string, VerifiedChats>,
+  /**
+   * Projects the caller actually reached a verdict on. A project outside this
+   * set is left untouched: the rebuild is a *total* recomputation over the
+   * corpus it is handed, so applying it to a project the pass never examined
+   * resets a perfectly good profile to nothing. Omit it to rebuild everything,
+   * which is only correct when the whole state was verified.
+   */
+  examined?: Set<string>,
+): void {
   const termCounts = new Map<string, Map<string, number>>();
   for (const [projectName, verified] of verifiedByProject) {
     const counts = new Map<string, number>();
@@ -363,7 +428,10 @@ export function rebuildProfileKeywords(index: ProjectIndexFile, verifiedByProjec
         counts.set(term, (counts.get(term) ?? 0) + 1);
       }
     }
-    termCounts.set(projectName, counts);
+    // Keyed by the normalized name so a case or spacing difference between the
+    // index key and the live project name does not wipe a project that did
+    // have confirmed conversations.
+    termCounts.set(normalize(projectName), counts);
   }
 
   const owners = new Map<string, number>();
@@ -371,15 +439,23 @@ export function rebuildProfileKeywords(index: ProjectIndexFile, verifiedByProjec
     for (const term of counts.keys()) owners.set(term, (owners.get(term) ?? 0) + 1);
   }
 
+  const verifiedIds = new Map<string, string[]>();
+  for (const [projectName, verified] of verifiedByProject) verifiedIds.set(normalize(projectName), verified.chatIds);
+
   for (const [projectName, profile] of Object.entries(index.projects)) {
-    const counts = termCounts.get(projectName);
+    const wanted = normalize(projectName);
+    // A project that *was* examined and confirmed nothing must still be reset —
+    // a stale example ID from a failed move keeps re-asserting the wrong project
+    // at high confidence. Only the un-examined are skipped.
+    if (examined && !examined.has(wanted) && !termCounts.has(wanted)) continue;
+    const counts = termCounts.get(wanted);
     const distinctive = [...(counts ?? new Map<string, number>())]
       .filter(([term]) => owners.get(term) === 1)
       .sort((left, right) => right[1] - left[1])
       .map(([term]) => term)
       .slice(0, 11);
     profile.keywords = [projectName, ...distinctive];
-    profile.exampleChatIds = verifiedByProject.get(projectName)?.chatIds ?? [];
+    profile.exampleChatIds = verifiedIds.get(wanted) ?? [];
     index.projects[projectName] = profile;
   }
 }
@@ -394,16 +470,32 @@ function dropKeywordsClaimedElsewhere(keywords: string[], claimedElsewhere: Set<
   return kept;
 }
 
+/**
+ * Collapses a project list to one entry per project, preserving the name the
+ * site actually renders.
+ *
+ * These names are *observed*, never authored, so they must survive untouched:
+ * truncating them to 60 characters meant a long project name was cached in a
+ * form the project chooser never displays, and the exact-label lookup then
+ * failed with `project "<name>" was not found in the project chooser after
+ * scrolling it to the end`. It also broke deduplication itself — findProject
+ * compared the raw name against already-cleaned entries, so a long project was
+ * never recognised as present and every refresh appended another copy.
+ */
 export function deduplicateProjects(projects: Project[]): Project[] {
   const result: Project[] = [];
   for (const project of projects) {
     if (!project.name.trim()) continue;
     const existing = findProject(result, project.name);
-    if (!existing) result.push({ ...project, name: cleanProjectName(project.name) });
+    if (!existing) result.push({ ...project, name: project.name.trim().replace(/\s+/g, " ") });
   }
   return result;
 }
 
+/**
+ * Bounds a project name this tool is about to *create*. Only the authoring path
+ * uses it; a name read from the site is kept verbatim by deduplicateProjects.
+ */
 export function cleanProjectName(name: string): string {
   return name.trim().replace(/\s+/g, " ").slice(0, 60);
 }

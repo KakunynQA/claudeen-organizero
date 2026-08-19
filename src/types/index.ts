@@ -54,6 +54,20 @@ export interface ArchiveOutcome {
   detail?: string;
 }
 
+/**
+ * The result of asking which project a conversation is in.
+ *
+ * The three cases are kept apart deliberately. Collapsing "I could not read the
+ * page" into the same `null` as "this conversation is in no project" is what let
+ * one unhydrated read be recorded as a confident verification failure, and the
+ * verifier then rewrote a perfectly good `moved` record as `unverified`. Only
+ * `none` is evidence; `unreadable` means ask again later.
+ */
+export type ProjectReading =
+  | { read: "ok"; project: Project }
+  | { read: "none" }
+  | { read: "unreadable"; reason: string };
+
 export interface MoveOutcome {
   verified: boolean;
   /** The project the conversation was actually observed in, when readable. */
