@@ -27,10 +27,6 @@ export function chatForClassification(chat: ChatContext, maxCharacters = 6000): 
   return { id: chat.id, url: chat.url, title, excerpts: output };
 }
 
-export function projectNames(projects: ProjectProfile[]): string[] {
-  return projects.map((project) => project.name.trim()).filter(Boolean);
-}
-
 export function findProject(projectName: string, projects: ProjectProfile[]): ProjectProfile | undefined {
   const wanted = normalizeName(projectName);
   return projects.find((project) => {

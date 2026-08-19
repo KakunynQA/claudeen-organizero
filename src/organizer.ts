@@ -46,7 +46,7 @@ const normalize = (value: string): string => value.trim().replace(/\s+/g, " ").t
 /**
  * An exact-case match wins before the case-insensitive one.
  *
- * Two projects can differ only by case — a real "Kakunyn" and a stray "kakunyn"
+ * Two projects can differ only by case — a real "Research" and a stray "research"
  * created by an earlier bug — and a case-insensitive search returns whichever
  * the sidebar happens to list first. That is a coin flip over where a
  * conversation lands, so the name the rule actually spells is preferred.

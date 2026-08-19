@@ -1,17 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ClassifierName, ProviderName } from "../types/index.js";
+import { DEFAULT_CLASSIFIER_THRESHOLDS } from "../classifier/classifier.js";
+import type { ProjectRule, ProjectRules } from "../classifier/classifier.js";
 
-export interface ProjectRule {
-  contains: string[];
-  project?: string;
-  review?: boolean;
-}
+// Re-exported so callers can keep importing the rule shape from the module that
+// loads it. There is deliberately only one declaration, in classifier.ts.
+export type { ProjectRule, ProjectRules };
 
-export interface ProjectRules {
-  aliases: Record<string, string>;
-  rules: ProjectRule[];
-}
+/** `loadProjectRules` always fills both fields, unlike the on-disk shape. */
+export type LoadedProjectRules = Required<ProjectRules>;
 
 export interface AppConfig {
   stateDir: string;
@@ -44,9 +42,9 @@ const defaults: AppConfig = {
   classifier: {
     openaiModel: "gpt-4o-mini",
     anthropicModel: "claude-haiku-4-5",
-    existingProjectThreshold: 0.7,
-    newProjectThreshold: 0.88,
-    keywordCeiling: 0.68,
+    existingProjectThreshold: DEFAULT_CLASSIFIER_THRESHOLDS.existingProject,
+    newProjectThreshold: DEFAULT_CLASSIFIER_THRESHOLDS.newProject,
+    keywordCeiling: DEFAULT_CLASSIFIER_THRESHOLDS.keywordCeiling,
     maxContextChars: 12_000,
   },
   discovery: { defaultMaxChats: 20, knownChatStopCount: 8, delayBetweenChatsMs: 1_200 },
@@ -78,18 +76,66 @@ function loadEnvFile(path = resolve(".env")): void {
   }
 }
 
+/**
+ * A malformed config used to surface as a bare `SyntaxError` naming neither the
+ * file nor the setting, which is a miserable thing to debug by hand.
+ */
+function readJsonFile<T>(path: string): T {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch (error) {
+    throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Validates the settings whose bad values fail *silently* rather than loudly.
+ *
+ * A threshold that arrives as a string or null makes every `confidence < threshold`
+ * comparison false, so instead of refusing a doubtful move the organizer accepts
+ * every one of them, at any confidence, and reports nothing unusual. That is the
+ * worst possible failure for this tool, so it is worth a hard error at startup.
+ */
+function validateConfig(config: AppConfig, path: string): AppConfig {
+  const where = existsSync(path) ? path : "config defaults";
+  const ratios: Array<[string, number]> = [
+    ["classifier.existingProjectThreshold", config.classifier.existingProjectThreshold],
+    ["classifier.newProjectThreshold", config.classifier.newProjectThreshold],
+    ["classifier.keywordCeiling", config.classifier.keywordCeiling],
+  ];
+  for (const [key, value] of ratios) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`${where}: "${key}" must be a number between 0 and 1, got ${JSON.stringify(value)}`);
+    }
+  }
+  const delay = config.discovery.delayBetweenChatsMs;
+  if (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0) {
+    throw new Error(`${where}: "discovery.delayBetweenChatsMs" must be a number >= 0, got ${JSON.stringify(delay)}`);
+  }
+  return config;
+}
+
 export function loadConfig(): AppConfig {
   loadEnvFile();
   const path = resolve("config/config.json");
-  const file = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Partial<AppConfig>) : {};
-  return mergeConfig(file);
+  const file = existsSync(path) ? readJsonFile<Partial<AppConfig>>(path) : {};
+  return validateConfig(mergeConfig(file), path);
 }
 
-export function loadProjectRules(): ProjectRules {
+export function loadProjectRules(): LoadedProjectRules {
   const path = resolve("config/project-rules.json");
   if (!existsSync(path)) return { aliases: {}, rules: [] };
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ProjectRules>;
-  return { aliases: parsed.aliases ?? {}, rules: parsed.rules ?? [] };
+  const parsed = readJsonFile<Partial<ProjectRules>>(path);
+  const rules = parsed.rules ?? [];
+  if (!Array.isArray(rules)) throw new Error(`${path}: "rules" must be an array`);
+  // A rule without a string[] `contains` reaches the matcher and throws there,
+  // pointing at the classifier rather than at the file the user just edited.
+  rules.forEach((rule: ProjectRule, index: number) => {
+    if (!rule || typeof rule !== "object" || !Array.isArray(rule.contains) || !rule.contains.every((term) => typeof term === "string")) {
+      throw new Error(`${path}: rules[${index}] needs a "contains" array of strings`);
+    }
+  });
+  return { aliases: parsed.aliases ?? {}, rules };
 }
 
 export function defaultClassifier(provider: ProviderName, configured?: ClassifierName): ClassifierName {

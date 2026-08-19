@@ -1,5 +1,9 @@
 # claudeen-organizero
 
+[![CI](https://github.com/KakunynQA/claudeen-organizero/actions/workflows/ci.yml/badge.svg)](https://github.com/KakunynQA/claudeen-organizero/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+
 Sorts your ChatGPT and Claude conversation history into Projects, automatically.
 
 It drives a real browser through your own logged-in session, reads each recent
@@ -7,9 +11,9 @@ conversation, decides which Project it belongs to, and moves it there — then
 **checks that the move actually happened** before recording it as done.
 
 ```
-[03/20] Injeção de Dependência Hilt
-     → kakunyn-copilot
-     confidence 0.84 · Distinctive project keywords matched: hilt, android.
+[03/20] android-app: dependency injection with Hilt
+     → android-app
+     confidence 0.94 · Project name or alias matched in the title: android-app.
      ✓ moved
 ```
 
@@ -20,12 +24,15 @@ conversation, decides which Project it belongs to, and moves it there — then
 
 ## Table of contents
 
+- [Why this exists](#why-this-exists)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Install](#install)
 - [First login](#first-login)
 - [Dry run](#dry-run)
+- [Scan](#scan)
 - [Organize](#organize)
+- [Archiving what cannot be moved](#archiving-what-cannot-be-moved)
 - [Verify](#verify)
 - [Report](#report)
 - [Classification](#classification)
@@ -36,6 +43,16 @@ conversation, decides which Project it belongs to, and moves it there — then
 - [Privacy](#privacy)
 - [Limitations and caveats](#limitations-and-caveats)
 - [Contributing](#contributing)
+
+## Why this exists
+
+I had hundreds of ChatGPT and Claude conversations and no way to find anything
+in them. Every time I needed something I had written weeks earlier, I was
+scrolling a sidebar and guessing at half-remembered titles.
+
+Both sites have Projects, which solve this — but only if the conversations are
+actually in them, and filing hundreds of old chats by hand is not something
+anyone is going to sit down and do. So I wrote this to do the filing.
 
 ## How it works
 
@@ -73,8 +90,13 @@ because the conversation is then skipped forever.
 ## Install
 
 ```bash
+git clone https://github.com/KakunynQA/claudeen-organizero.git
+cd claudeen-organizero
 npm install
 ```
+
+Every command below is run from the repository root: configuration and state are
+resolved relative to the working directory.
 
 If no Chrome-family browser is installed, add the fallback once:
 
@@ -116,6 +138,28 @@ npm run organize -- --provider chatgpt --dry-run --max-chats 20
 A dry run reads the site and prints the decision it *would* make for each
 conversation. It creates nothing, moves nothing, and writes nothing to state.
 
+## Scan
+
+`scan` is the bulk-review path, and the one to reach for on a history that has
+never been organized. It reads and classifies every conversation, writes each
+decision to local state as a *proposal*, and touches nothing on the site.
+
+```bash
+npm run scan -- --provider chatgpt --titles-only
+npm run report -- --provider chatgpt
+```
+
+The report then opens with a **Proposals from the last scan** block, one table
+per proposed project, so a whole history can be judged in one sitting instead of
+one conversation at a time.
+
+This is not the same as `organize --dry-run`. A dry run prints its decisions and
+writes nothing; a scan persists them, so the moves can be made later as a single
+decided batch instead of re-reading everything. Pair it with `--titles-only` to
+classify from the sidebar titles alone: one page load plus scrolling for the
+entire history, rather than a navigation per conversation, which is what draws
+rate limits and bot checks.
+
 ## Organize
 
 ```bash
@@ -132,12 +176,18 @@ Unverified (will be retried): 1
 Already organized: 3
 Projects created: 0
 Needs review: 2
+Unsupported (the site offers no way to move these): 0
 Errors: 0
 ```
 
 `Needs review` means the classifier was not confident enough — by design, not a
 failure. `Unverified` means the move was attempted but could not be confirmed;
 those conversations stay in the queue and are retried automatically.
+
+`Unsupported` means the site itself offers no *Move to project* action for that
+conversation — a custom-GPT chat, for example. That is a settled answer, not a
+transient failure, so it is never retried; see
+[Archiving what cannot be moved](#archiving-what-cannot-be-moved).
 
 `needs-review` is deliberately *not* retried, so an ambiguous conversation does
 not cost tokens on every run. After adding an API key or new rules, reconsider
@@ -146,6 +196,24 @@ them explicitly:
 ```bash
 npm run organize -- --provider chatgpt --reprocess
 ```
+
+## Archiving what cannot be moved
+
+Some conversations have no *Move to project* action at all, and they accumulate
+as `unsupported`. Archiving them clears the history without deleting anything.
+
+```bash
+npm run archive -- --provider chatgpt --dry-run
+npm run archive -- --provider chatgpt --max-chats 10
+```
+
+This is deliberately narrow. It only ever touches conversations the local state
+has *already recorded* as `unsupported`, so a mistyped command cannot archive a
+conversation that merely failed once. It is currently implemented for `chatgpt`
+only; `--provider claude` exits with an error.
+
+It does change your account, so start with `--dry-run` and cap the first real
+batch with `--max-chats`.
 
 ## Verify
 
@@ -180,10 +248,15 @@ npm run report -- --provider claude --out ~/claude-report.md
 
 Without `--out` the file is written to `.state/report-<provider>.md`.
 
-The report opens with a per-status count, then one section per project — in
-alphabetical order — listing every conversation recorded as `moved` or
-`already-organized`, followed by the `Needs review`, `Unverified`, and `Errors`
-sections. Each row carries the conversation title, its opening message, and a
+The report opens with a per-status count. If the last run was a
+[scan](#scan), a **Proposals from the last scan** block comes next — one table
+per proposed project, carrying extra `Proposed project` and `Confidence`
+columns, and moving nothing. Then comes one section per project, in
+alphabetical order, listing every conversation recorded as `moved` or
+`already-organized`, followed by `Needs review`, `Unverified`, `Cannot be
+moved`, `Archived`, and `Errors`. Empty sections are omitted, and row numbers
+run continuously through the whole document so a row can be referred to by
+number. Each row carries the conversation title, its opening message, and a
 link back to it.
 
 The **Opening message** column is the conversation's first user message,
@@ -238,7 +311,7 @@ harder to undo than a misplaced chat.
 
 ```json
 {
-  "aliases": { "Kakunyn Technology": "kakunyn" },
+  "aliases": { "FromSoftware": "Elden Ring" },
   "rules": [
     { "contains": ["elden ring", "godrick", "malenia"], "project": "Elden Ring" },
     { "contains": ["dkim", "dmarc"], "review": true }
@@ -263,7 +336,9 @@ conversation.
 | Command | Purpose |
 | --- | --- |
 | `login` | Open a real browser to authenticate once, per provider |
+| `scan` | Classify every conversation read-only; proposals show up in the next `report` |
 | `organize` | Classify and move conversations |
+| `archive` | Archive conversations already recorded as `unsupported` (ChatGPT only) |
 | `verify` | Re-check organized conversations against the live site |
 | `projects` | List and cache the projects discovered in the sidebar |
 | `status` | Print local counters without opening a browser |
@@ -275,10 +350,11 @@ conversation.
 | `--provider <chatgpt\|claude>` | Required. Which site to drive |
 | `--dry-run` | Read and decide, change nothing |
 | `--max-chats <n>` | Cap how many conversations to handle |
-| `--out <path>` | `report` only: where to write the Markdown (default `.state/report-<provider>.md`) |
+| `--out <path>` | `report` only: where to write the Markdown (default `.state/report-<provider>.md`). `~` is expanded; relative paths resolve from the repository root |
 | `--refresh-projects` | Re-read the project list instead of using the cache |
 | `--reprocess` | Reconsider conversations already recorded |
 | `--backfill` | Keep scanning past known conversations into older history |
+| `--titles-only` | `organize`/`scan` only: classify from the sidebar title alone, never opening a conversation. Far faster and much less likely to trip a rate limit; the trade-off is that no excerpt is recorded |
 | `--rebuild-profiles` | `verify` only: recompute keyword profiles from verified chats |
 | `--headless` | Run without a visible window (headed is the default) |
 | `--debug` | Print stack traces |
@@ -290,16 +366,22 @@ src/
   cli.ts                    argument parsing and command dispatch
   organizer.ts              the run loop: discover → classify → move → record
   verifier.ts               audits recorded state against the live site
+  report.ts                 renders local state as Markdown (pure, no I/O)
+  errors.ts                 the two errors that change control flow
+  types/index.ts            the shared vocabulary
+  config/config.ts          defaults, config.json, .env, project rules
   browser/                  persistent profile, launch, manual-login flow
   classifier/
+    classifier.ts                 interfaces and the default thresholds
     deterministic-classifier.ts   rules and keyword profiles
-    llm-classifiers.ts            OpenAI and Anthropic fallbacks
-    classifier.ts                 the layered classifier that chains them
+    llm-classifiers.ts            OpenAI/Anthropic calls, and the layered
+                                  classifier that chains them
   providers/
     provider.ts             the interface every site adapter implements
     chatgpt/                chatgpt.com adapter + its selectors
     claude/                 claude.ai adapter + its selectors
   state/state-store.ts      atomic JSON state and an append-only action log
+  utils/diagnostics.ts      HTML and URL sanitizers for the debug captures
 ```
 
 `ConversationProvider` is the seam. The organizer only knows semantic
@@ -321,7 +403,7 @@ Every failed operation also writes a screenshot, sanitized page HTML, and
 metadata to `.state/debug/<timestamp>-<provider>-<action>/`. Start repairs in
 the failing provider's `selectors.ts`.
 
-Three failure modes have accounted for every real breakage so far, and none of
+Five failure modes have accounted for every real breakage so far, and none of
 them is a missing selector:
 
 - **Scrollable lists.** The project chooser only renders a first page of
@@ -343,7 +425,9 @@ them is a missing selector:
 - **Rate-limit modals.** ChatGPT blocks the UI with a full-screen overlay when
   it throttles history access. Undetected, it becomes a run of identical click
   timeouts, one per conversation. The run stops instead, and nothing pending is
-  marked as failed.
+  marked as failed. `--titles-only` is the documented way to avoid provoking
+  this on a large history: it never opens a conversation, so the whole run costs
+  one page load plus scrolling.
 
 ## Privacy
 
@@ -355,13 +439,17 @@ them is a missing selector:
   attaching one to a bug report.
 - Conversation text is sent to an LLM provider only when you configure an API
   key, and only for conversations the local layers could not decide.
+- There is no telemetry and no analytics. See [SECURITY.md](SECURITY.md) for the
+  full data-handling notes and the private disclosure path.
 
 ## Limitations and caveats
 
 - Automating a web UI you do not own can conflict with its terms of service.
   You are responsible for how you use this on your own account.
-- The tool moves conversations. It never deletes them, but a move is yours to
-  undo — start with `--dry-run` and a small `--max-chats`.
+- The tool moves conversations, and `archive` archives them. It never deletes
+  anything, but both are yours to undo — start with `--dry-run` and a small
+  `--max-chats`.
+- `archive` is implemented for ChatGPT only.
 - Selectors track two third-party UIs and will break when those UIs change.
 - Only Chrome-family browsers are supported.
 - Classification is a judgement call. `needs-review` is the honest answer for an
@@ -371,9 +459,14 @@ them is a missing selector:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports about broken selectors are
 especially welcome — include the sanitized capture from `.state/debug/` and the
-site you were on.
+site you were on, and read
+[what never to attach](SECURITY.md#never-attach-these-to-a-report) first.
 
 ```bash
-npm run typecheck
+npm run typecheck   # src/ and test/
 npm test
 ```
+
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md) — report vulnerabilities privately, not in an issue
+- [License](LICENSE) — MIT

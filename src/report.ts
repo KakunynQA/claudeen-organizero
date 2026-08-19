@@ -33,7 +33,7 @@ function linkCell(url: string | undefined): string {
 
 /**
  * Rows are numbered across the whole document so a reviewer can answer with
- * numbers ("12, 30 -> pessoal") instead of retyping titles.
+ * numbers ("12, 30 -> personal") instead of retyping titles.
  */
 function row(chat: ProcessedChat, number: number): string {
   return `| ${number} | ${cell(chat.title)} | ${cell(chat.excerpt)} | ${linkCell(chat.url)} |`;

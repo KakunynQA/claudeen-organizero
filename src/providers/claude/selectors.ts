@@ -6,7 +6,6 @@ export const CLAUDE_SELECTORS = {
   projectsHref: /\/projects?(?:\/|$)/i,
   chatHref: /\/chat\//i,
   loginPath: /\/(?:login|sign-in|auth)(?:\/|$)/i,
-  projectNames: ["Projects", "Project"],
   createProjectLabels: /^(?:new|create|add)\s+project$/i,
   projectActionLabels: /(?:move|add)\s+(?:to\s+)?project/i,
   conversationMenuLabels: /(?:conversation|chat).*(?:menu|options)|(?:more|options)/i,

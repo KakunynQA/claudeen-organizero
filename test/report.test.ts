@@ -6,7 +6,6 @@ import type { ProcessedChat } from "../src/types/index.js";
 function chat(overrides: Partial<ProcessedChat> & { title: string }): ProcessedChat {
   return {
     key: overrides.title,
-    title: overrides.title,
     provider: "chatgpt",
     processedAt: "2026-01-01T00:00:00.000Z",
     classificationConfidence: 0.9,
@@ -42,17 +41,17 @@ describe("buildReport", () => {
   it("should group placed conversations under one heading per project", () => {
     const report = buildReport(
       [
-        chat({ title: "Hilt setup", project: "kakunyn-copilot" }),
-        chat({ title: "Hilt modules", project: "kakunyn-copilot" }),
+        chat({ title: "Hilt setup", project: "android-app" }),
+        chat({ title: "Hilt modules", project: "android-app" }),
         chat({ title: "Boss fights", project: "Elden Ring", status: "already-organized" }),
       ],
       "chatgpt",
     );
-    assert.ok(report.includes("## kakunyn-copilot"));
+    assert.ok(report.includes("## android-app"));
     assert.ok(report.includes("## Elden Ring"));
-    const copilot = headingIndex(report, "kakunyn-copilot");
+    const heading = headingIndex(report, "android-app");
     const rowIndex = report.split("\n").indexOf(rowFor(report, "Hilt modules"));
-    assert.ok(rowIndex > copilot, "a project's rows must follow its own heading");
+    assert.ok(rowIndex > heading, "a project's rows must follow its own heading");
   });
 
   it("should order project headings alphabetically", () => {

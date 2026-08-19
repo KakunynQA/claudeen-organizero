@@ -2,13 +2,31 @@
   "name": "claudeen-organizero",
   "version": "0.1.0",
   "private": true,
+  "description": "Sorts your ChatGPT and Claude conversation history into Projects, automatically.",
+  "license": "MIT",
   "type": "module",
+  "keywords": [
+    "chatgpt",
+    "claude",
+    "playwright",
+    "automation",
+    "cli",
+    "conversation-history"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KakunynQA/claudeen-organizero.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KakunynQA/claudeen-organizero/issues"
+  },
+  "homepage": "https://github.com/KakunynQA/claudeen-organizero#readme",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "login": "tsx src/cli.ts login",
     "organize": "tsx src/cli.ts organize",
     "scan": "tsx src/cli.ts scan",

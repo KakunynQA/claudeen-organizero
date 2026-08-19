@@ -32,8 +32,8 @@ const DEFAULT_AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Claude renders an icon glyph from the Unicode private-use area before every
- * project name, so the label reads like "<glyph> Kakunyn". Those code points
- * survive `trim()`, which made " Kakunyn" a different project from "kakunyn":
+ * project name, so the label reads like "<glyph> Research". Those code points
+ * survive `trim()`, which made " Research" a different project from "Research":
  * the lookup missed and the organizer created a second, empty project with the
  * name it had been asked for. Icon glyphs carry no meaning here, so they are
  * dropped along with the other invisibles at the one point where text enters.

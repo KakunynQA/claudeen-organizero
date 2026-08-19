@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { BrowserSession } from "./browser/browser-session.js";
 import { ensureAuthenticated } from "./browser/auth.js";
 import { runNativeLogin } from "./browser/installed-browser.js";
@@ -53,7 +54,7 @@ function parseArgs(argv: string[]): CliOptions {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new Error(`--${key} requires a value`);
       values.set(key, value);
-    } else if (["dry-run", "refresh-projects", "reprocess", "backfill", "rebuild-profiles", "titles-only", "headed", "headless", "debug"].includes(key)) {
+    } else if (["dry-run", "refresh-projects", "reprocess", "backfill", "rebuild-profiles", "titles-only", "headless", "debug"].includes(key)) {
       values.set(key, true);
     } else throw new Error(`Unknown option: --${key}`);
   }
@@ -81,6 +82,16 @@ function parseArgs(argv: string[]): CliOptions {
   };
 }
 
+/**
+ * `resolve()` leaves a leading `~` alone, so `--out ~/report.md` used to create a
+ * directory literally named `~` inside the repository.
+ */
+function expandTilde(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));
+  return path;
+}
+
 async function run(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const config = loadConfig();
@@ -101,7 +112,7 @@ async function run(): Promise<void> {
   // run in progress cannot be disturbed by asking for an audit.
   if (options.command === "report") {
     const { chats } = await store.loadChats();
-    const path = resolve(options.out ?? `${config.stateDir}/report-${options.provider}.md`);
+    const path = resolve(expandTilde(options.out ?? `${config.stateDir}/report-${options.provider}.md`));
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, buildReport(chats, options.provider), "utf8");
     console.log(`Wrote report for ${chats.length} conversation(s) to ${path}`);
