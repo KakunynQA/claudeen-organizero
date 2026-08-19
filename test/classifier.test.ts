@@ -39,46 +39,56 @@ describe("DeterministicClassifier", () => {
   });
 
   describe("word-boundary matching for Portuguese words", () => {
-    it("should NOT match 'casa' in 'por acaso'", async () => {
-      const classifier = new DeterministicClassifier();
-      const chat: ChatContext = {
-        id: "chat1",
-        title: "Discussion about an accidental thing",
-        excerpts: [
-          { role: "user", text: "Por acaso, eu descobri isso" },
-          { role: "assistant", text: "Que achado interessante" },
-        ],
-      };
-      const projects: ProjectProfile[] = [
+    /**
+     * These thresholds are deliberately permissive, and that is the whole point.
+     * Under the shipped defaults `keywordCeiling` (0.68) sits below
+     * `existingProject` (0.70), so a keyword-only match can never be returned —
+     * a null assertion against a default classifier passes whether or not word
+     * boundaries are respected, and would keep passing if `containsTerm` were
+     * replaced by `String.includes`. Lowering the gate is what gives these
+     * negatives something to fail against; the positive control below proves
+     * the fixture really can match.
+     */
+    const permissive = () => new DeterministicClassifier({}, { keywordCeiling: 0.95, existingProject: 0.55 });
+    const casaProject: ProjectProfile[] = [
+      { name: "CasaProject", description: "", keywords: ["casa"], aliases: [], exampleChatIds: [] },
+    ];
+
+    it("matches 'casa' when it really is a word (positive control)", async () => {
+      const result = await permissive().classify(
+        { id: "chat1", title: "Reforma da casa", excerpts: [{ role: "user", text: "A casa precisa de reforma" }] },
+        casaProject,
+      );
+      assert.ok(result, "if this fails the two negatives below prove nothing");
+      assert.equal(result.projectName, "CasaProject");
+    });
+
+    // "casa" is a genuine prefix of "casamento" and "casado", so a substring
+    // implementation returns CasaProject for a conversation about a wedding.
+    it("should NOT match 'casa' in 'casamento'", async () => {
+      const result = await permissive().classify(
         {
-          name: "CasaProject",
-          description: "",
-          keywords: ["casa"],
-          aliases: [],
-          exampleChatIds: [],
+          id: "chat1",
+          title: "Planejando o casamento",
+          excerpts: [
+            { role: "user", text: "O casamento vai ser em junho, ja estamos casados no papel" },
+            { role: "assistant", text: "Que noticia boa" },
+          ],
         },
-      ];
-      const result = await classifier.classify(chat, projects);
-      assert.equal(result, null, "should not match 'casa' in 'por acaso'");
+        casaProject,
+      );
+      assert.equal(result, null, "should not match 'casa' in 'casamento'");
     });
 
     it("should NOT match 'casa' in 'casaco'", async () => {
-      const classifier = new DeterministicClassifier();
-      const chat: ChatContext = {
-        id: "chat1",
-        title: "About clothing",
-        excerpts: [{ role: "user", text: "Preciso de um casaco quente" }],
-      };
-      const projects: ProjectProfile[] = [
+      const result = await permissive().classify(
         {
-          name: "CasaProject",
-          description: "",
-          keywords: ["casa"],
-          aliases: [],
-          exampleChatIds: [],
+          id: "chat1",
+          title: "Comprando um casaco",
+          excerpts: [{ role: "user", text: "Preciso de um casaco quente" }],
         },
-      ];
-      const result = await classifier.classify(chat, projects);
+        casaProject,
+      );
       assert.equal(result, null, "should not match 'casa' in 'casaco'");
     });
 

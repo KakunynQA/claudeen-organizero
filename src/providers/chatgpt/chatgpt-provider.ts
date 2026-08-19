@@ -1054,8 +1054,17 @@ function normalizeName(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function cleanText(value: string): string {
-  return normalizeName(value).replace(/^(?:copy|edit|delete|more options)\s*/i, "").trim();
+/**
+ * Drops a leading row-action label that some ChatGPT builds fold into an
+ * element's accessible name ("Copy Prompts" for a project called "Prompts").
+ *
+ * The trailing `\s+` is required, not optional. Without it the alternation also
+ * ate the start of any name that merely *begins* with one of those words:
+ * "Copywriting" became "writing" and "Editorial" became "orial", so the project
+ * could never be matched against its own sidebar entry again.
+ */
+export function cleanText(value: string): string {
+  return normalizeName(value).replace(/^(?:copy|edit|delete|more options)\s+/i, "").trim();
 }
 
 function cleanChatTitle(value: string): string {
@@ -1068,9 +1077,21 @@ function cleanChatTitle(value: string): string {
     .trim();
 }
 
-/** Labels that mention a project but name an action or a panel, not a project. */
-const PROJECT_ACTION_LABEL =
-  /^(?:add|move|open|new|create|remove|manage)\b|project\s+(?:sources?|files?|settings|instructions|options)/i;
+/**
+ * Labels that mention a project but name an action or a panel, not a project.
+ *
+ * Matched as whole control phrases. A bare leading verb is far too broad for a
+ * user-chosen name: `^(?:add|move|open|new|create|remove|manage)\b` rejected
+ * "New Website", "Open Source", "Move to Berlin" and "Manage Rentals", so the
+ * breadcrumb could never confirm those projects and every conversation in one
+ * of them read as being in no project. The panel alternatives are anchored at
+ * the end for the same reason, so "Project Files Archive" survives.
+ *
+ * This is only the last line of defence — readProjectOfOpenConversation matches
+ * on the project id first, which no label can spoof.
+ */
+export const PROJECT_ACTION_LABEL =
+  /^(?:add|move|remove)\s+(?:to|from)?\s*project\b|^(?:new|create)\s+project\b|^manage\s+project\b|project\s+(?:sources?|files?|settings|instructions|options)$/i;
 
 /** Accent-insensitive slug matching ChatGPT's own URL slugs. */
 const COMBINING_MARKS = /[̀-ͯ]/g;
