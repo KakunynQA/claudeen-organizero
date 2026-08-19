@@ -88,6 +88,8 @@ export class ClaudeProvider implements ConversationProvider {
   private readonly authenticationTimeoutMs: number;
   private page?: Page;
   private cachedProjects?: Project[];
+  /** Conversations each project page lists, read at most twice per project per run. */
+  private readonly projectPageChats = new Map<string, Set<string>>();
 
   constructor(pageOrContext: PageOrContext, options: ClaudeProviderOptions = {}) {
     // Page has goto; BrowserContext does not. This avoids depending on a
@@ -1062,14 +1064,20 @@ export class ClaudeProvider implements ConversationProvider {
       .map((overlay) => overlay.getByRole("button", { name: /^(?:move|add|confirm)$/i }).first());
     if (confirm.length > 0) await this.clickFirst(confirm);
     if (!fromList) return this.confirmChatInProject(chat, project);
-    // Nothing on the list — or on the conversation, which carries no project
-    // reference at all in this build — proves membership, so this move is
-    // reported as unconfirmed on purpose rather than assumed good. The project
-    // pass is what settles it, at one page per project instead of per chat.
+    // Nothing on the history list proves membership, so the project's own page
+    // is read instead — one navigation per project rather than per chat.
+    //
+    // This branch used to return `verified: false` unconditionally, deferring to
+    // a "project pass" that was never written. Since `unverified` is retryable,
+    // every conversation moved from the list was moved again on every later run,
+    // for ever, and learn() was never called for any of them.
+    if (await this.chatIsOnProjectPage(chat, project)) {
+      return { verified: true, observedProject: project.name };
+    }
     return {
       verified: false,
       observedProject: project.name,
-      detail: "moved from the conversation list; membership still has to be confirmed against the project page",
+      detail: "moved from the conversation list, but the project page does not list the conversation",
     };
   }
 
@@ -1128,6 +1136,69 @@ export class ClaudeProvider implements ConversationProvider {
           ? `the conversation could not be read after the move: ${unreadable}`
           : "no project could be read from the conversation after the move",
     };
+  }
+
+  /**
+   * Confirms membership by reading the project's own page and looking for the
+   * conversation in it.
+   *
+   * Matching is on conversation id or url only — never on title. A title is not
+   * an identity here, and a false positive is the one outcome this whole tool
+   * exists to prevent: it would record a move that never happened and skip the
+   * conversation for ever after. Anything unexpected answers "not confirmed",
+   * which merely costs a retry.
+   *
+   * The page is read once per project per run. A miss re-reads it once, because
+   * a listing cached before this conversation was moved would not contain it.
+   */
+  private async chatIsOnProjectPage(chat: ChatSummary, project: Project): Promise<boolean> {
+    const url = project.url ?? (project.id ? this.pageUrl(`/project/${encodeURIComponent(project.id)}`) : undefined);
+    if (!url) return false;
+    const wanted = [chat.id, chat.url]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => normalize(value));
+    if (wanted.length === 0) return false;
+
+    const cacheKey = normalize(project.id ?? project.url ?? project.name);
+    const hit = (listed: Set<string>): boolean => wanted.some((value) => listed.has(value));
+
+    const cached = this.projectPageChats.get(cacheKey);
+    if (cached && hit(cached)) return true;
+
+    const fresh = await this.readProjectPageChatKeys(url);
+    if (!fresh) return false;
+    this.projectPageChats.set(cacheKey, fresh);
+    return hit(fresh);
+  }
+
+  /**
+   * Every conversation the project page links to, as normalized ids and urls.
+   * Returns undefined when the page could not be read, so a navigation failure
+   * is never mistaken for an empty project.
+   */
+  private async readProjectPageChatKeys(url: string): Promise<Set<string> | undefined> {
+    try {
+      const page = await this.getPage();
+      const previous = page.url();
+      await this.gotoAndSettle(url);
+      const hrefs = await page.locator('a[href*="/chat/"]').evaluateAll((nodes) =>
+        nodes.map((node) => (node as HTMLAnchorElement).getAttribute("href") ?? ""),
+      );
+      const keys = new Set<string>();
+      for (const href of hrefs) {
+        if (!href) continue;
+        const absolute = new URL(href, this.baseUrl).toString();
+        keys.add(normalize(absolute));
+        const id = absolute.split("/chat/")[1]?.split(/[?#/]/)[0];
+        if (id) keys.add(normalize(decodeURIComponent(id)));
+      }
+      // Leave the browser where it was, so the caller's next read is not
+      // answered from the project page.
+      if (previous && previous !== page.url()) await this.gotoAndSettle(previous).catch(() => undefined);
+      return keys;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
