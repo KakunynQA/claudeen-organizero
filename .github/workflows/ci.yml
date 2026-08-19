@@ -1,0 +1,36 @@
+name: CI
+
+# Read-only: checkout, setup-node, typecheck and test need nothing more, and
+# `npm ci` runs dependency lifecycle scripts on every pull request from a fork.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in package.json engines, and current LTS.
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      # No browser is needed: everything covered here is pure logic. The
+      # provider adapters are exercised against the live sites by hand, because
+      # a mock of a UI that changes weekly proves nothing.
+      - run: npm run typecheck
+      - run: npm test

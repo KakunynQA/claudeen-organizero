@@ -1,0 +1,13 @@
+{
+  // `tsconfig.json` builds src/ only, so on its own `tsc --noEmit` never looked
+  // at a single test file. This config is what `npm run typecheck` uses.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    // Relaxed for tests only: assertion code indexes fixture arrays constantly,
+    // and `src/` stays strict because `build` still uses tsconfig.json.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

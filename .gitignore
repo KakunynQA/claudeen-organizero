@@ -1,0 +1,31 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+
+# Browser profiles (live session cookies), cached conversation data, debug captures.
+# Never commit or share this directory.
+.state/
+playwright/.auth/
+
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Private, user-specific configuration (may contain conversation titles)
+config/config.json
+config/project-rules.json
+config/project-rules.backup.json
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
