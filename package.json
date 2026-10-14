@@ -39,7 +39,7 @@
     "report": "tsx src/cli.ts report"
   },
   "dependencies": {
-    "playwright": "^1.54.2"
+    "playwright": "^1.64.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
